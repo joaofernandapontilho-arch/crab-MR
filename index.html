@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>VR Box - Hand Tracking & Camera</title>
+    <title>VR Box - Real Camera & Hand Mesh</title>
     <style>
         body {
             margin: 0;
@@ -19,18 +19,16 @@
             height: 100vh;
             z-index: 1;
         }
-        /* Vídeo da câmera fica oculto e serve de input para o MediaPipe */
         #input-video {
             display: none;
         }
-        /* Tela de toque inicial para habilitar áudio/sensores/permissões no Android */
         #permission-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.92);
+            background: rgba(0, 0, 0, 0.95);
             z-index: 10;
             display: flex;
             flex-direction: column;
@@ -66,9 +64,9 @@
 <body>
 
     <div id="permission-overlay">
-        <h2>VR Box Hand Tracking</h2>
-        <p>Toque no botão abaixo para permitir o uso da câmera frontal e dos sensores de movimento do seu celular.</p>
-        <button id="start-btn">ENTRAR NO MODO VR</button>
+        <h2>VR Box Camera PassThrough</h2>
+        <p>Toque abaixo para ativar a câmara real no fundo e o rastreio de mãos.</p>
+        <button id="start-btn">INICIAR CÂMARA VR</button>
     </div>
 
     <video id="input-video" playsinline></video>
@@ -76,16 +74,24 @@
 
     <script>
         let scene, camera, renderer, effect, controls;
-        let leftHandSpheres = [];
-        let rightHandSpheres = [];
-        let handsInitialized = false;
+        let videoTexture, videoPlane;
+        let leftHandGroup, rightHandGroup;
+        let leftBones = [], rightBones = [];
 
-        // Inicializa a cena 3D Three.js
+        // Conexões tradicionais do esqueleto das mãos do MediaPipe (pares de juntas)
+        const HAND_CONNECTIONS = [
+            [0,1],[1,2],[2,3],[3,4],       // Polegar
+            [0,5],[5,6],[6,7],[7,8],       // Indicador
+            [5,9],[9,10],[10,11],[11,12],  // Médio
+            [9,13],[13,14],[14,15],[15,16],// Anelar
+            [13,17],[17,18],[18,19],[19,20],// Mindinho
+            [0,17]                         // Base da palma
+        ];
+
         function initThree() {
             const container = document.getElementById('webgl-container');
 
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x0a0a12);
 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
@@ -94,48 +100,52 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             container.appendChild(renderer.domElement);
 
-            // Efeito Estéreo Dividido para as Lentes do VR Box
             effect = new THREE.StereoEffect(renderer);
             effect.setSize(window.innerWidth, window.innerHeight);
             effect.separation = 0.3;
 
-            // Controles de Giroscópio
             controls = new THREE.DeviceOrientationControls(camera, true);
 
-            // Luz ambiente e direcional
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-            scene.add(ambientLight);
+            // Criar plano de fundo com a câmara real do celular (PassThrough)
+            const videoElement = document.getElementById('input-video');
+            videoTexture = new THREE.VideoTexture(videoElement);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
 
-            const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
-            dirLight.position.set(0, 10, 10);
-            scene.add(dirLight);
+            const planeGeo = new THREE.PlaneGeometry(16, 9);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, side: THREE.DoubleSide });
+            videoPlane = new THREE.Mesh(planeGeo, planeMat);
+            videoPlane.position.set(0, 0, -5);
+            videoPlane.scale.set(0.6, 0.6, 0.6);
+            scene.add(videoPlane);
 
-            // Criar esferas visuais para as 21 juntas da mão esquerda (Azul)
-            const sphereGeo = new THREE.SphereGeometry(0.08, 16, 16);
-            const leftMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.3 });
-            for (let i = 0; i < 21; i++) {
-                const mesh = new THREE.Mesh(sphereGeo, leftMat);
-                mesh.visible = false;
-                scene.add(mesh);
-                leftHandSpheres.push(mesh);
-            }
+            // Luzes
+            scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-            // Criar esferas visuais para as 21 juntas da mão direita (Verde)
-            const rightMat = new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 });
-            for (let i = 0; i < 21; i++) {
-                const mesh = new THREE.Mesh(sphereGeo, rightMat);
-                mesh.visible = false;
-                scene.add(mesh);
-                rightHandSpheres.push(mesh);
-            }
-
-            // Grid de referência no chão para ambientação 3D
-            const grid = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
-            grid.position.y = -2;
-            scene.add(grid);
+            // Grupos para as mãos com aspeto de contorno/malha (estilo da referência)
+            leftHandGroup = createHandStructure(0x38bdf8); // Azul claro translúcido
+            rightHandGroup = createHandStructure(0x34d399); // Verde claro translúcido
+            scene.add(leftHandGroup);
+            scene.add(rightHandGroup);
 
             window.addEventListener('resize', onWindowResize, false);
             animate();
+        }
+
+        function createHandStructure(colorHex) {
+            const group = new THREE.Group();
+            const sphereGeo = new THREE.SphereGeometry(0.04, 8, 8);
+            const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.8 });
+            
+            const spheres = [];
+            for (let i = 0; i < 21; i++) {
+                const mesh = new THREE.Mesh(sphereGeo, mat);
+                mesh.visible = false;
+                group.add(mesh);
+                spheres.push(mesh);
+            }
+            group.userData = spheres;
+            return group;
         }
 
         function onWindowResize() {
@@ -150,7 +160,6 @@
             effect.render(scene, camera);
         }
 
-        // Configuração do MediaPipe Hands para rastrear as 2 mãos
         function initMediaPipe() {
             const videoElement = document.getElementById('input-video');
 
@@ -159,8 +168,8 @@
             });
 
             hands.setOptions({
-                maxNumHands: 2,             // Rastreia até 2 mãos simultaneamente
-                modelComplexity: 1,         // Equilíbrio entre performance e precisão
+                maxNumHands: 2,
+                modelComplexity: 1,
                 minDetectionConfidence: 0.6,
                 minTrackingConfidence: 0.6
             });
@@ -175,60 +184,46 @@
                 height: 480
             });
 
-            cameraUtils.start().then(() => {
-                console.log("Câmera frontal iniciada para Hand Tracking!");
-            }).catch(err => {
-                console.error("Erro ao acessar a câmera:", err);
-                alert("Erro ao abrir a câmera. Verifique as permissões do navegador.");
+            cameraUtils.start().catch(err => {
+                console.error("Erro na câmara:", err);
+                alert("Erro ao abrir a câmara. Verifique as permissões.");
             });
         }
 
-        // Processa os pontos 3D detectados nas mãos e atualiza as esferas no espaço 3D
         function onHandResults(results) {
-            // Oculta todas as esferas por padrão a cada quadro
-            leftHandSpheres.forEach(s => s.visible = false);
-            rightHandSpheres.forEach(s => s.visible = false);
+            // Esconde os grupos por predefinição
+            leftHandGroup.children.forEach(m => m.visible = false);
+            rightHandGroup.children.forEach(m => m.visible = false);
 
-            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-                return;
-            }
+            if (!results.multiHandLandmarks) return;
 
             for (let i = 0; i < results.multiHandLandmarks.length; i++) {
                 const landmarks = results.multiHandLandmarks[i];
                 const classification = results.multiHandedness[i];
-                
-                // No MediaPipe, 'Left' / 'Right' da câmera frontal invertem o lado espelhado real do usuário
-                // Usamos a classificação para separar as esferas correspondentes
-                const isLeftHand = classification.label === 'Left';
-                const sphereArray = isLeftHand ? leftHandSpheres : rightHandSpheres;
+                const isLeft = classification.label === 'Left';
+                const targetGroup = isLeft ? leftHandGroup : rightHandGroup;
 
                 for (let j = 0; j < landmarks.length; j++) {
                     const lm = landmarks[j];
-                    const sphere = sphereArray[j];
+                    const sphere = targetGroup.children[j];
                     if (sphere) {
-                        // Mapeia as coordenadas 2D/3D da câmera para o espaço virtual em frente à câmera do Three.js
-                        // X inverte devido ao espelhamento da câmera frontal
-                        const x = (0.5 - lm.x) * 3.5;
-                        const y = (0.5 - lm.y) * 3.5;
-                        const z = -lm.z * 3.0 - 1.5; // Profundidade estimada em frente aos olhos
-
-                        sphere.position.set(x, y, z);
+                        // Posiciona as juntas proporcionalmente no espaço virtual sobre a câmara
+                        sphere.position.set(
+                            (0.5 - lm.x) * 2.5,
+                            (0.5 - lm.y) * 2.5,
+                            -2.0 + (lm.z * 1.5)
+                        );
                         sphere.visible = true;
                     }
                 }
             }
         }
 
-        // Gatilho de início do usuário (essencial para desbloquear permissões em smartphones)
         document.getElementById('start-btn').addEventListener('click', () => {
-            const overlay = document.getElementById('permission-overlay');
-            overlay.style.display = 'none';
-
-            // Solicita permissão de orientação em dispositivos iOS / Android modernos
+            document.getElementById('permission-overlay').style.display = 'none';
             if (typeof DeviceOrientationEvent.requestPermission === 'function') {
                 DeviceOrientationEvent.requestPermission().catch(console.error);
             }
-
             initThree();
             initMediaPipe();
         });
