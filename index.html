@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>VR Box - FullScreen Rear Camera & Hand Tracking</title>
+    <title>VR Box - MR Passthrough</title>
     <style>
         body {
             margin: 0;
@@ -28,7 +28,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.95);
+            background: #000;
             z-index: 10;
             display: flex;
             flex-direction: column;
@@ -64,12 +64,12 @@
 <body>
 
     <div id="permission-overlay">
-        <h2>VR Box Realidade Aumentada</h2>
+        <h2>Modo Mixed Reality (VR Box)</h2>
         <p>Toque abaixo para ativar a câmara traseira em tela cheia e o rastreio de mãos.</p>
-        <button id="start-btn">ENTRAR NO MODO VR</button>
+        <button id="start-btn">ENTRAR NO MODO MR</button>
     </div>
 
-    <video id="input-video" playsinline></video>
+    <video id="input-video" autoplay playsinline muted></video>
     <div id="webgl-container"></div>
 
     <script>
@@ -89,29 +89,28 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             container.appendChild(renderer.domElement);
 
+            // Efeito Estéreo para dividir as lentes do VR Box
             effect = new THREE.StereoEffect(renderer);
             effect.setSize(window.innerWidth, window.innerHeight);
             effect.separation = 0.3;
 
             controls = new THREE.DeviceOrientationControls(camera, true);
 
-            // Plano de vídeo da câmara traseira cobrindo a tela inteira em profundidade
+            // Criar plano de vídeo com a câmara traseira preenchendo o campo visual inteiro
             const videoElement = document.getElementById('input-video');
             videoTexture = new THREE.VideoTexture(videoElement);
             videoTexture.minFilter = THREE.LinearFilter;
             videoTexture.magFilter = THREE.LinearFilter;
 
-            // Geometria esticada para ocupar o campo de visão completo
-            const planeGeo = new THREE.PlaneGeometry(25, 14);
+            const planeGeo = new THREE.PlaneGeometry(30, 16.875); // Proporção 16:9 imersiva
             const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, side: THREE.DoubleSide });
             videoPlane = new THREE.Mesh(planeGeo, planeMat);
-            videoPlane.position.set(0, 0, -5);
+            videoPlane.position.set(0, 0, -6);
             scene.add(videoPlane);
 
-            // Luzes
             scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-            // Grupos para as mãos
+            // Grupos de esferas para as mãos esquerda e direita
             leftHandGroup = createHandStructure(0x38bdf8); 
             rightHandGroup = createHandStructure(0x34d399); 
             scene.add(leftHandGroup);
@@ -123,7 +122,7 @@
 
         function createHandStructure(colorHex) {
             const group = new THREE.Group();
-            const sphereGeo = new THREE.SphereGeometry(0.04, 8, 8);
+            const sphereGeo = new THREE.SphereGeometry(0.045, 8, 8);
             const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.9 });
             
             for (let i = 0; i < 21; i++) {
@@ -149,35 +148,48 @@
         function initMediaPipe() {
             const videoElement = document.getElementById('input-video');
 
-            const hands = new Hands({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-            });
-
-            hands.setOptions({
-                maxNumHands: 2,
-                modelComplexity: 1,
-                minDetectionConfidence: 0.6,
-                minTrackingConfidence: 0.6
-            });
-
-            hands.onResults(onHandResults);
-
-            // Força a utilização estrita da câmara traseira (environment)
-            const cameraUtils = new Camera(videoElement, {
-                onFrame: async () => {
-                    await hands.send({ image: videoElement });
+            // Força direta por getUserMedia para garantir a câmara traseira (environment) em tela cheia no Android
+            navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: { exact: "environment" },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
                 },
-                width: 1280,
-                height: 720,
-                facingMode: "environment"
-            });
+                audio: false
+            }).then(stream => {
+                videoElement.srcObject = stream;
+                videoElement.play();
 
-            cameraUtils.start().catch(err => {
-                console.error("Erro na câmara traseira:", err);
-                // Fallback caso o telemóvel restrincha o "environment" exato
-                navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-                    .then(stream => { videoElement.srcObject = stream; videoElement.play(); })
-                    .catch(e => alert("Não foi possível aceder à câmara traseira."));
+                const hands = new Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                });
+
+                hands.setOptions({
+                    maxNumHands: 2,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults(onHandResults);
+
+                // Envia frames continuamente para o MediaPipe processar as mãos por cima da câmara traseira
+                async function sendVideoFrame() {
+                    if (!videoElement.paused && !videoElement.ended) {
+                        await hands.send({ image: videoElement });
+                    }
+                    requestAnimationFrame(sendVideoFrame);
+                }
+                sendVideoFrame();
+
+            }).catch(err => {
+                console.warn("Tentando fallback de câmara genérica...", err);
+                // Fallback caso o telemóvel não aceite o exato "exact: environment"
+                navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                    .then(stream => {
+                        videoElement.srcObject = stream;
+                        videoElement.play();
+                    }).catch(e => alert("Erro ao abrir a câmara traseira. Verifique as permissões."));
             });
         }
 
@@ -197,11 +209,11 @@
                     const lm = landmarks[j];
                     const sphere = targetGroup.children[j];
                     if (sphere) {
-                        // Mapeamento otimizado para a câmara traseira em tela cheia
+                        // Posicionamento exato mapeado sobre o feed da câmara traseira
                         sphere.position.set(
-                            (0.5 - lm.x) * 4.0,
-                            (0.5 - lm.y) * 4.0,
-                            -2.5 + (lm.z * 1.5)
+                            (0.5 - lm.x) * 4.5,
+                            (0.5 - lm.y) * 4.5,
+                            -3.0 + (lm.z * 2.0)
                         );
                         sphere.visible = true;
                     }
