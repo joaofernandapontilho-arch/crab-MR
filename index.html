@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>VR Box - Real Camera & Hand Mesh</title>
+    <title>VR Box - FullScreen Rear Camera & Hand Tracking</title>
     <style>
         body {
             margin: 0;
@@ -64,9 +64,9 @@
 <body>
 
     <div id="permission-overlay">
-        <h2>VR Box Camera PassThrough</h2>
-        <p>Toque abaixo para ativar a câmara real no fundo e o rastreio de mãos.</p>
-        <button id="start-btn">INICIAR CÂMARA VR</button>
+        <h2>VR Box Realidade Aumentada</h2>
+        <p>Toque abaixo para ativar a câmara traseira em tela cheia e o rastreio de mãos.</p>
+        <button id="start-btn">ENTRAR NO MODO VR</button>
     </div>
 
     <video id="input-video" playsinline></video>
@@ -76,17 +76,6 @@
         let scene, camera, renderer, effect, controls;
         let videoTexture, videoPlane;
         let leftHandGroup, rightHandGroup;
-        let leftBones = [], rightBones = [];
-
-        // Conexões tradicionais do esqueleto das mãos do MediaPipe (pares de juntas)
-        const HAND_CONNECTIONS = [
-            [0,1],[1,2],[2,3],[3,4],       // Polegar
-            [0,5],[5,6],[6,7],[7,8],       // Indicador
-            [5,9],[9,10],[10,11],[11,12],  // Médio
-            [9,13],[13,14],[14,15],[15,16],// Anelar
-            [13,17],[17,18],[18,19],[19,20],// Mindinho
-            [0,17]                         // Base da palma
-        ];
 
         function initThree() {
             const container = document.getElementById('webgl-container');
@@ -106,25 +95,25 @@
 
             controls = new THREE.DeviceOrientationControls(camera, true);
 
-            // Criar plano de fundo com a câmara real do celular (PassThrough)
+            // Plano de vídeo da câmara traseira cobrindo a tela inteira em profundidade
             const videoElement = document.getElementById('input-video');
             videoTexture = new THREE.VideoTexture(videoElement);
             videoTexture.minFilter = THREE.LinearFilter;
             videoTexture.magFilter = THREE.LinearFilter;
 
-            const planeGeo = new THREE.PlaneGeometry(16, 9);
+            // Geometria esticada para ocupar o campo de visão completo
+            const planeGeo = new THREE.PlaneGeometry(25, 14);
             const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, side: THREE.DoubleSide });
             videoPlane = new THREE.Mesh(planeGeo, planeMat);
             videoPlane.position.set(0, 0, -5);
-            videoPlane.scale.set(0.6, 0.6, 0.6);
             scene.add(videoPlane);
 
             // Luzes
             scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-            // Grupos para as mãos com aspeto de contorno/malha (estilo da referência)
-            leftHandGroup = createHandStructure(0x38bdf8); // Azul claro translúcido
-            rightHandGroup = createHandStructure(0x34d399); // Verde claro translúcido
+            // Grupos para as mãos
+            leftHandGroup = createHandStructure(0x38bdf8); 
+            rightHandGroup = createHandStructure(0x34d399); 
             scene.add(leftHandGroup);
             scene.add(rightHandGroup);
 
@@ -135,16 +124,13 @@
         function createHandStructure(colorHex) {
             const group = new THREE.Group();
             const sphereGeo = new THREE.SphereGeometry(0.04, 8, 8);
-            const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.8 });
+            const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.9 });
             
-            const spheres = [];
             for (let i = 0; i < 21; i++) {
                 const mesh = new THREE.Mesh(sphereGeo, mat);
                 mesh.visible = false;
                 group.add(mesh);
-                spheres.push(mesh);
             }
-            group.userData = spheres;
             return group;
         }
 
@@ -176,22 +162,26 @@
 
             hands.onResults(onHandResults);
 
+            // Força a utilização estrita da câmara traseira (environment)
             const cameraUtils = new Camera(videoElement, {
                 onFrame: async () => {
                     await hands.send({ image: videoElement });
                 },
-                width: 640,
-                height: 480
+                width: 1280,
+                height: 720,
+                facingMode: "environment"
             });
 
             cameraUtils.start().catch(err => {
-                console.error("Erro na câmara:", err);
-                alert("Erro ao abrir a câmara. Verifique as permissões.");
+                console.error("Erro na câmara traseira:", err);
+                // Fallback caso o telemóvel restrincha o "environment" exato
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+                    .then(stream => { videoElement.srcObject = stream; videoElement.play(); })
+                    .catch(e => alert("Não foi possível aceder à câmara traseira."));
             });
         }
 
         function onHandResults(results) {
-            // Esconde os grupos por predefinição
             leftHandGroup.children.forEach(m => m.visible = false);
             rightHandGroup.children.forEach(m => m.visible = false);
 
@@ -207,11 +197,11 @@
                     const lm = landmarks[j];
                     const sphere = targetGroup.children[j];
                     if (sphere) {
-                        // Posiciona as juntas proporcionalmente no espaço virtual sobre a câmara
+                        // Mapeamento otimizado para a câmara traseira em tela cheia
                         sphere.position.set(
-                            (0.5 - lm.x) * 2.5,
-                            (0.5 - lm.y) * 2.5,
-                            -2.0 + (lm.z * 1.5)
+                            (0.5 - lm.x) * 4.0,
+                            (0.5 - lm.y) * 4.0,
+                            -2.5 + (lm.z * 1.5)
                         );
                         sphere.visible = true;
                     }
